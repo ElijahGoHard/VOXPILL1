@@ -99,21 +99,19 @@ struct Chip : juce::Button
 // ============================================================ content
 struct VoxPillEditor::Content : juce::Component, juce::Timer, juce::TextEditor::Listener
 {
-    enum Tab { Talk, Tweak, Help };
+    enum Tab { Talk, Styles, Tweak, Help };
 
     VoxPillProcessor& proc;
     CrtLook look;
     Tab tab = Talk;
     juce::TextEditor input;
     juce::OwnedArray<Chip> chips;
-    Chip tabTalk { "TALK" }, tabTweak { "TWEAK" }, tabHelp { "HELP" }, resetBtn { "RESET" }, sendBtn { "SEND" }, rawBtn { "RAW" }, afterBtn { "AFTER" };
+    Chip tabTalk { "TALK" }, tabStyles { "STYLES" }, tabTweak { "TWEAK" }, tabHelp { "HELP" }, resetBtn { "RESET" }, sendBtn { "SEND" }, rawBtn { "RAW" }, afterBtn { "AFTER" };
 
     struct Knob { juce::Slider s; juce::String label; juce::Rectangle<int> area; std::unique_ptr<juce::SliderParameterAttachment> att; };
     juce::OwnedArray<Knob> knobs;
     struct Row { juce::Slider s; juce::String label; std::unique_ptr<juce::SliderParameterAttachment> att; };
     juce::OwnedArray<Row> rows;
-    juce::ComboBox keyBox, scaleBox;
-    std::unique_ptr<juce::ComboBoxParameterAttachment> keyAtt, scaleAtt;
 
     int reveal = 100000; juce::String revealTarget;
     float blink = 0, t = 0, bounce = 0;
@@ -143,7 +141,7 @@ struct VoxPillEditor::Content : juce::Component, juce::Timer, juce::TextEditor::
 
         // tweak rows
         struct R { const char* id; const char* label; };
-        for (auto r : { R { "tune", "TUNE" }, R { "tuneSpeed", "TUNE SPEED" }, R { "deess", "DE-ESS" }, R { "width", "WIDTH" }, R { "chorus", "CHORUS" },
+        for (auto r : { R { "deess", "DE-ESS" }, R { "width", "WIDTH" }, R { "chorus", "CHORUS" },
                         R { "dbl", "DOUBLER" }, R { "reverb", "REVERB" }, R { "echo", "ECHO" }, R { "sat", "SATURATE" } })
         {
             auto* row = rows.add (new Row()); row->label = r.label;
@@ -155,12 +153,6 @@ struct VoxPillEditor::Content : juce::Component, juce::Timer, juce::TextEditor::
             addChildComponent (row->s);
             row->att = std::make_unique<juce::SliderParameterAttachment> (*proc.apvts.getParameter (r.id), row->s, nullptr);
         }
-        keyBox.addItemList (proc.apvts.getParameter ("key")->getAllValueStrings(), 1);
-        scaleBox.addItemList (proc.apvts.getParameter ("scale")->getAllValueStrings(), 1);
-        addChildComponent (keyBox); addChildComponent (scaleBox);
-        keyAtt = std::make_unique<juce::ComboBoxParameterAttachment> (*proc.apvts.getParameter ("key"), keyBox, nullptr);
-        scaleAtt = std::make_unique<juce::ComboBoxParameterAttachment> (*proc.apvts.getParameter ("scale"), scaleBox, nullptr);
-
         // prompt
         input.setMultiLine (false); input.setReturnKeyStartsNewLine (false);
         input.setFont (mono (13.f)); input.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
@@ -171,8 +163,8 @@ struct VoxPillEditor::Content : juce::Component, juce::Timer, juce::TextEditor::
         input.setIndents (2, 3); input.addListener (this);
         addAndMakeVisible (input);
 
-        for (auto* b : { &tabTalk, &tabTweak, &tabHelp, &resetBtn, &sendBtn }) addAndMakeVisible (b);
-        tabTalk.onClick = [this] { setTab (Talk); }; tabTweak.onClick = [this] { setTab (Tweak); }; tabHelp.onClick = [this] { setTab (Help); };
+        for (auto* b : { &tabTalk, &tabStyles, &tabTweak, &tabHelp, &resetBtn, &sendBtn }) addAndMakeVisible (b);
+        tabTalk.onClick = [this] { setTab (Talk); }; tabStyles.onClick = [this] { setTab (Styles); }; tabTweak.onClick = [this] { setTab (Tweak); }; tabHelp.onClick = [this] { setTab (Help); };
         resetBtn.onClick = [this] { submit ("reset"); }; sendBtn.onClick = [this] { submit (input.getText()); };
         for (auto* b : { &rawBtn, &afterBtn }) addAndMakeVisible (b);
         rawBtn.onClick = [this] { setAfter (false); }; afterBtn.onClick = [this] { setAfter (true); };
@@ -202,26 +194,23 @@ struct VoxPillEditor::Content : juce::Component, juce::Timer, juce::TextEditor::
 
     void layoutAll()
     {
-        const bool talk = tab == Talk, tweak = tab == Tweak;
+        const bool talk = tab == Talk, tweak = tab == Tweak, styles = tab == Styles;
         input.setVisible (talk); sendBtn.setVisible (talk);
-        for (auto* c : chips) c->setVisible (talk);
+        for (auto* c : chips) c->setVisible (styles);
         for (auto* r : rows) r->s.setVisible (tweak);
-        keyBox.setVisible (tweak); scaleBox.setVisible (tweak);
 
-        tabTalk.setBounds (72, 62, 64, 22); tabTweak.setBounds (140, 62, 64, 22); tabHelp.setBounds (208, 62, 64, 22);
+        tabTalk.setBounds (72, 62, 62, 22); tabStyles.setBounds (138, 62, 62, 22); tabTweak.setBounds (204, 62, 62, 22); tabHelp.setBounds (270, 62, 62, 22);
         resetBtn.setBounds (628, 62, 62, 22);
-        tabTalk.active = tab == Talk; tabTweak.active = tab == Tweak; tabHelp.active = tab == Help;
+        tabTalk.active = talk; tabStyles.active = styles; tabTweak.active = tweak; tabHelp.active = tab == Help;
         input.setBounds (92, 286, 384, 26); sendBtn.setBounds (484, 286, 58, 26);
-        const int cw = 66; int cx = 72;
-        for (auto* c : chips) { c->setBounds (cx, 322, cw, 22); cx += cw + 2; }
+        const int cols = 5, cw = 120, ch = 28; int i = 0;
+        for (auto* c : chips) { c->setBounds (72 + (i % cols) * (cw + 4), 100 + (i / cols) * (ch + 6), cw, ch); ++i; }
         rawBtn.light = afterBtn.light = true; rawBtn.setBounds (560, 570, 70, 34); afterBtn.setBounds (636, 570, 80, 34);
-        // tweak rows: two columns
-        for (int i = 0; i < rows.size(); ++i)
+        for (int k = 0; k < rows.size(); ++k)
         {
-            int col = i / 5, ri = i % 5;
-            rows[i]->s.setBounds (72 + col * 312 + 92, 96 + ri * 34, 210, 26);
+            int col = k / 4, ri = k % 4;
+            rows[k]->s.setBounds (72 + col * 312 + 92, 100 + ri * 40, 210, 26);
         }
-        keyBox.setBounds (72 + 312 + 92, 96 + 4 * 34 + 34, 96, 24); scaleBox.setBounds (72 + 312 + 92 + 104, 96 + 4 * 34 + 34, 110, 24);
     }
 
     void timerCallback() override
@@ -304,10 +293,8 @@ struct VoxPillEditor::Content : juce::Component, juce::Timer, juce::TextEditor::
     {
         // status line
         g.setFont (mono (9.f)); g.setColour (pal::pinkDim.brighter (0.3f));
-        float hz = proc.detectedHz.load();
-        juce::String st = "VOXPILL v1.0  |  KEY " + proc.apvts.getParameter ("key")->getCurrentValueAsText() + " " + proc.apvts.getParameter ("scale")->getCurrentValueAsText().toUpperCase();
-        if (hz > 0) st << "  |  F0 " << juce::String (juce::roundToInt (hz)) << "HZ";
-        g.drawText (st, 280, 62, 340, 22, juce::Justification::centredLeft);
+        juce::String st = "VOXPILL v1.1  |  STYLE CHAINS + TALK";
+        g.drawText (st, 345, 62, 270, 22, juce::Justification::centredLeft);
         g.setColour (pal::pink.withAlpha (0.4f)); g.drawLine (72, 88, 688, 88, 1.f);
 
         if (tab == Talk)
@@ -331,25 +318,31 @@ struct VoxPillEditor::Content : juce::Component, juce::Timer, juce::TextEditor::
             // prompt box
             g.setColour (pal::pink.withAlpha (0.8f)); g.drawRect (juce::Rectangle<int> (76, 282, 470, 34), 1);
             g.setFont (mono (13.f, true)); g.drawText (">", 76, 286, 12, 26, juce::Justification::centred);
+            g.setFont (mono (9.f)); g.setColour (pal::pinkDim.brighter (0.6f));
+            g.drawText ("TAP STYLES FOR ARTIST CHAINS - OR TYPE A NAME LIKE \"NETTSPEND\"", 76, 322, 470, 24, juce::Justification::centredLeft);
             drawMascot (g, { 570.f, 100.f, 120.f, 170.f });
+        }
+        else if (tab == Styles)
+        {
+            g.setFont (mono (9.f)); g.setColour (pal::pinkDim.brighter (0.6f));
+            g.drawText ("PICK A STYLE. IT LOADS A FULL CHAIN - THEN FINE TUNE WITH KNOBS OR TALK.", 72, 296, 616, 24, juce::Justification::centredLeft);
         }
         else if (tab == Tweak)
         {
             g.setFont (mono (11.f, true)); g.setColour (pal::pinkHi);
             for (int i = 0; i < rows.size(); ++i)
                 g.drawText (rows[i]->label, rows[i]->s.getX() - 92, rows[i]->s.getY(), 88, 26, juce::Justification::centredLeft);
-            g.drawText ("KEY / SCALE", keyBox.getX() - 92, keyBox.getY(), 90, 24, juce::Justification::centredLeft);
             g.setFont (mono (10.f)); g.setColour (pal::pinkDim.brighter (0.5f));
-            g.drawText ("tune needs a mono, in-tune-ish vocal. set key + scale first.", 72, 292, 600, 40, juce::Justification::topLeft);
+            g.drawText ("every style chip just sets these. tweak after loading one.", 72, 292, 600, 40, juce::Justification::topLeft);
         }
         else
         {
             g.setFont (mono (12.f)); g.setColour (pal::pinkHi);
             g.drawFittedText (
                 "TYPE WHAT YOU WANT. THE CHAIN MOVES.\n\n"
-                "  \"darker and wider\"\n  \"hard tune in f minor\"\n  \"less harsh, more air\"\n  \"thicker with a slap echo\"\n"
+                "  \"darker and wider\"\n  \"nettspend\"  /  \"skaiwater but drier\"\n  \"less harsh, more air\"\n  \"thicker with a slap echo\"\n"
                 "  \"squash it a bit, kill the room noise\"\n  \"dreamy with lots of reverb\"\n  \"reset\"\n\n"
-                "OR TAP A STYLE CHIP ON THE TALK TAB.\nRAW / AFTER = A/B THE CHAIN.",
+                "ARTIST CHAINS ARE ROUGH BY-EAR STARTING POINTS.\nRAW / AFTER = A/B THE CHAIN.",
                 juce::Rectangle<int> (72, 98, 600, 240), juce::Justification::topLeft, 20);
         }
     }

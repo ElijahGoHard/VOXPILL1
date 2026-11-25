@@ -5,7 +5,6 @@ using APF = juce::AudioParameterFloat;
 using APC = juce::AudioParameterChoice;
 using APB = juce::AudioParameterBool;
 
-static const char* kNotes[12] = { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" };
 
 juce::AudioProcessorValueTreeState::ParameterLayout VoxPillProcessor::layout()
 {
@@ -21,10 +20,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout VoxPillProcessor::layout()
     l.add (pct ("air", "Air", 0.3f));
     l.add (pct ("gate", "Gate", 0.f));
     l.add (pct ("comp", "Comp", 0.4f));
-    l.add (pct ("tune", "Tune", 0.f));
-    l.add (pct ("tuneSpeed", "Tune Speed", 0.5f));
-    l.add (std::make_unique<APC> (juce::ParameterID { "key", 1 }, "Key", juce::StringArray { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" }, 0));
-    l.add (std::make_unique<APC> (juce::ParameterID { "scale", 1 }, "Scale", juce::StringArray { "Chromatic", "Major", "Minor" }, 0));
     l.add (pct ("deess", "De-ess", 0.3f));
     l.add (std::make_unique<APF> (juce::ParameterID { "width", 1 }, "Width", juce::NormalisableRange<float> (0.f, 2.f, 0.01f), 1.f));
     l.add (pct ("chorus", "Chorus", 0.f));
@@ -58,10 +53,8 @@ void VoxPillProcessor::prepareToPlay (double rate, int block)
         *essBand[c].coefficients = *juce::dsp::IIR::Coefficients<float>::makeHighPass (rate, 5500.f, 0.707f);
         dl[c].assign ((size_t) (rate * 0.12), 0.f);
         echo[c].assign ((size_t) (rate * 2.5), 0.f);
-        shifter[c].prepare (rate);
     }
-    det.prepare (rate);
-    dw = ew = 0; lfoPh = 0; gateEnv = 0; gateGain = 1; compEnv = 0; smoothGr = 0; curRatio = 1.f;
+    dw = ew = 0; lfoPh = 0; gateEnv = 0; gateGain = 1; compEnv = 0; smoothGr = 0;
     reverb.reset();
     volSm.reset (rate, 0.03); mixSm.reset (rate, 0.03);
     volSm.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (get ("volume")));
@@ -79,10 +72,8 @@ void VoxPillProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBu
 
     // --- parameters
     const float dose = get ("dose"), tone = get ("tone"), airA = get ("air"), gateA = get ("gate"), compA = get ("comp") * (0.4f + 0.6f * dose);
-    const float tuneA = get ("tune"), tuneSp = get ("tuneSpeed");
     const float deessA = get ("deess") * (0.5f + 0.5f * dose), width = get ("width");
     const float chorusA = get ("chorus"), dblA = get ("dbl"), revA = get ("reverb"), echoA = get ("echo"), satA = get ("sat") * (0.4f + 0.6f * dose);
-    const int key = (int) get ("key"), scale = (int) get ("scale");
     const bool after = get ("after") > 0.5f;
     volSm.setTargetValue (juce::Decibels::decibelsToGain (get ("volume")));
     mixSm.setTargetValue (after ? get ("mix") : 0.f);
@@ -109,8 +100,6 @@ void VoxPillProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBu
     const float eA = std::exp (-1.f / (float) (sr * 0.001f)), eR = std::exp (-1.f / (float) (sr * 0.02f));
     const float compThr = -10.f - compA * 16.f, ratio = 1.5f + compA * 5.f;
     const float makeup = juce::Decibels::decibelsToGain ((-compThr) * (1.f - 1.f / ratio) * 0.38f);
-    const float tau = 0.0015f + 0.25f * std::pow (1.f - tuneSp, 2.f);
-    const float ratioSmooth = 1.f - std::exp (-1.f / (float) (sr * tau));
     const float satDrive = 1.f + satA * 5.f, satNorm = 1.f / satDrive;
     const float pi2 = juce::MathConstants<float>::twoPi;
     const float lfoInc = 0.45f / (float) sr;
@@ -119,7 +108,6 @@ void VoxPillProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBu
     float* L = buf.getWritePointer (0);
     float* R = buf.getWritePointer (1);
     float inPk = 0, outPk = 0, grMax = 0;
-    float targetRatio = 1.f;
 
     for (int i = 0; i < n; ++i)
     {
@@ -136,37 +124,6 @@ void VoxPillProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBu
             l *= gateGain; r *= gateGain;
         }
         l = hp[0].processSample (l); r = hp[1].processSample (r);
-
-        // pitch correction
-        if (tuneA > 0.001f)
-        {
-            det.push (0.5f * (l + r));
-            if ((i & 31) == 0)
-            {
-                targetRatio = 1.f;
-                const float f0 = det.f0;
-                if (f0 > 60.f && f0 < 900.f)
-                {
-                    float m = 69.f + 12.f * std::log2 (f0 / 440.f);
-                    float rel = std::fmod (m - (float) key + 120.f, 12.f), base = m - rel;
-                    static const int major[] = { 0,2,4,5,7,9,11 }, minor[] = { 0,2,3,5,7,8,10 };
-                    float bestD = 99.f, tgt = m;
-                    for (int o = -1; o <= 1; ++o)
-                        for (int k = 0; k < (scale == 0 ? 12 : 7); ++k)
-                        {
-                            float nt = base + (float) key * 0.f + (float) o * 12.f + (scale == 0 ? (float) k : (float) (scale == 1 ? major[k] : minor[k]));
-                            float d = std::abs (nt - m);
-                            if (d < bestD) { bestD = d; tgt = nt; }
-                        }
-                    float semis = juce::jlimit (-2.f, 2.f, (tgt - m) * tuneA);
-                    targetRatio = std::pow (2.f, semis / 12.f);
-                }
-            }
-            curRatio += (targetRatio - curRatio) * ratioSmooth;
-            float b = juce::jlimit (0.f, 1.f, std::abs (1.f - curRatio) * 120.f);
-            float sl = shifter[0].process (l, curRatio), sr2 = shifter[1].process (r, curRatio);
-            l += (sl - l) * b; r += (sr2 - r) * b;
-        }
 
         // EQ
         l = air[0].processSample (tilt[0].processSample (presence[0].processSample (lowMid[0].processSample (l))));
@@ -239,7 +196,7 @@ void VoxPillProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBu
     // reverb
     if (revA > 0.001f)
     {
-        juce::Reverb::Parameters rp; rp.roomSize = 0.55f + 0.3f * revA; rp.damping = 0.55f; rp.wetLevel = revA * 0.3f * (0.5f + 0.5f * dose);
+        juce::Reverb::Parameters rp; rp.roomSize = 0.55f + 0.3f * revA; rp.damping = 0.55f; rp.wetLevel = revA * 0.22f * (0.5f + 0.5f * dose);
         rp.dryLevel = 1.f; rp.width = 1.f; reverb.setParameters (rp);
         reverb.processStereo (L, R, n);
     }
@@ -255,7 +212,6 @@ void VoxPillProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBu
     }
     inLevel = juce::jmax (inPk, inLevel.load() * 0.92f); outLevel = juce::jmax (outPk, outLevel.load() * 0.92f);
     grDb = juce::jmax (grMax, grDb.load() * 0.9f);
-    detectedHz = tuneA > 0.001f ? det.f0 : 0.f;
 }
 
 // ============================================================ prompt engine
@@ -272,18 +228,33 @@ float VoxPillProcessor::nudge (const char* id, float d)
     return v;
 }
 
-struct PresetDef { const char* name; float tune, speed, deess, comp, sat, air, tone, width, chorus, dbl, rev, echo, gate, dose; };
+struct PresetDef { const char* name; const char* alias; float deess, comp, sat, air, tone, width, chorus, dbl, rev, echo, gate, dose; };
+// "Artist" chains are rough, by-ear approximations of each artist's general vocal character - starting points, not exact chains.
 static const PresetDef kPresets[] = {
-    // name           tune speed deess comp  sat  air  tone  width chor  dbl   rev  echo gate dose
-    { "clean pop",    0.0f, 0.5f, 0.45f, 0.45f, 0.10f, 0.40f,  0.15f, 1.15f, 0.00f, 0.10f, 0.12f, 0.00f, 0.00f, 0.8f },
-    { "melodic trap", 0.8f, 0.9f, 0.40f, 0.55f, 0.20f, 0.35f,  0.00f, 1.35f, 0.10f, 0.35f, 0.18f, 0.22f, 0.10f, 0.9f },
-    { "dark rnb",     0.2f, 0.4f, 0.35f, 0.50f, 0.18f, 0.12f, -0.45f, 1.30f, 0.25f, 0.25f, 0.28f, 0.12f, 0.00f, 0.8f },
-    { "airy ballad",  0.1f, 0.3f, 0.50f, 0.40f, 0.05f, 0.75f,  0.30f, 1.25f, 0.20f, 0.15f, 0.40f, 0.10f, 0.00f, 0.7f },
-    { "hyperpop",     1.0f, 1.0f, 0.55f, 0.75f, 0.40f, 0.85f,  0.40f, 1.70f, 0.45f, 0.40f, 0.20f, 0.15f, 0.00f, 1.0f },
-    { "lofi tape",    0.0f, 0.5f, 0.20f, 0.60f, 0.55f, 0.00f, -0.70f, 0.80f, 0.35f, 0.00f, 0.22f, 0.10f, 0.00f, 0.9f },
-    { "radio talk",   0.0f, 0.5f, 0.55f, 0.80f, 0.15f, 0.20f,  0.10f, 0.60f, 0.00f, 0.00f, 0.00f, 0.00f, 0.35f, 0.9f },
-    { "rage",         0.5f, 0.8f, 0.35f, 0.85f, 0.65f, 0.30f,  0.10f, 1.45f, 0.00f, 0.50f, 0.10f, 0.18f, 0.20f, 1.0f },
-    { "drill",        0.3f, 0.7f, 0.50f, 0.70f, 0.30f, 0.25f, -0.15f, 1.05f, 0.00f, 0.20f, 0.20f, 0.00f, 0.25f, 0.9f },
+    // name              alias         deess comp   sat    air    tone   width  chor   dbl    rev    echo   gate  dose
+    { "Nettspend",       "nett",       0.45f, 0.70f, 0.40f, 0.65f,  0.25f, 1.45f, 0.20f, 0.45f, 0.45f, 0.30f, 0.10f, 0.95f },
+    { "Skaiwater",       "skai",       0.40f, 0.45f, 0.15f, 0.70f, -0.10f, 1.55f, 0.45f, 0.35f, 0.60f, 0.35f, 0.00f, 0.85f },
+    { "Slayr",           "",           0.35f, 0.80f, 0.60f, 0.35f,  0.05f, 1.40f, 0.10f, 0.55f, 0.15f, 0.15f, 0.25f, 1.00f },
+    { "Ken Carson",      "carson",     0.35f, 0.85f, 0.65f, 0.35f,  0.10f, 1.45f, 0.05f, 0.55f, 0.12f, 0.15f, 0.25f, 1.00f },
+    { "Playboi Carti",   "carti",      0.30f, 0.75f, 0.50f, 0.40f,  0.20f, 1.20f, 0.00f, 0.40f, 0.10f, 0.12f, 0.20f, 0.95f },
+    { "Destroy Lonely",  "lonely",     0.30f, 0.80f, 0.55f, 0.20f, -0.05f, 1.10f, 0.00f, 0.30f, 0.08f, 0.10f, 0.25f, 0.95f },
+    { "Yeat",            "yeat",       0.40f, 0.80f, 0.70f, 0.50f,  0.15f, 1.50f, 0.25f, 0.60f, 0.15f, 0.12f, 0.10f, 1.00f },
+    { "Summrs",          "summrs",     0.45f, 0.50f, 0.20f, 0.60f,  0.05f, 1.35f, 0.30f, 0.35f, 0.35f, 0.20f, 0.00f, 0.85f },
+    { "Autumn!",         "autumn",     0.45f, 0.55f, 0.25f, 0.55f,  0.00f, 1.35f, 0.25f, 0.40f, 0.30f, 0.20f, 0.05f, 0.85f },
+    { "Glaive",          "glaive",     0.55f, 0.75f, 0.30f, 0.85f,  0.40f, 1.55f, 0.40f, 0.45f, 0.20f, 0.15f, 0.00f, 1.00f },
+    { "Ericdoa",         "ericdoa",    0.55f, 0.75f, 0.35f, 0.80f,  0.40f, 1.50f, 0.40f, 0.40f, 0.22f, 0.15f, 0.00f, 1.00f },
+    { "Bladee",          "bladee",     0.45f, 0.55f, 0.30f, 0.55f,  0.00f, 1.65f, 0.55f, 0.30f, 0.65f, 0.35f, 0.00f, 0.90f },
+    { "Osamason",        "osama",      0.30f, 0.90f, 0.75f, 0.30f,  0.05f, 1.40f, 0.00f, 0.60f, 0.10f, 0.10f, 0.30f, 1.00f },
+    { "Che",             "che ",       0.35f, 0.70f, 0.45f, 0.30f, -0.05f, 1.20f, 0.05f, 0.35f, 0.15f, 0.12f, 0.20f, 0.90f },
+    { "Xaviersobased",   "xavier",     0.25f, 0.65f, 0.55f, 0.15f, -0.30f, 1.15f, 0.10f, 0.30f, 0.20f, 0.15f, 0.15f, 0.90f },
+    { "Homixide Gang",   "homixide",   0.30f, 0.80f, 0.50f, 0.20f, -0.10f, 1.00f, 0.00f, 0.30f, 0.06f, 0.08f, 0.30f, 0.95f },
+    { "Bktherula",       "bktherula",  0.45f, 0.50f, 0.15f, 0.60f,  0.10f, 1.35f, 0.30f, 0.35f, 0.35f, 0.25f, 0.00f, 0.85f },
+    { "Lazer Dim 700",   "lazer",      0.35f, 0.65f, 0.30f, 0.30f, -0.10f, 1.15f, 0.10f, 0.30f, 0.20f, 0.15f, 0.10f, 0.85f },
+    { "Cochise",         "cochise",    0.35f, 0.80f, 0.55f, 0.25f,  0.00f, 1.10f, 0.00f, 0.30f, 0.10f, 0.10f, 0.20f, 0.95f },
+    { "Dark Plugg",      "plugg",      0.40f, 0.60f, 0.30f, 0.30f, -0.45f, 1.35f, 0.25f, 0.30f, 0.35f, 0.20f, 0.10f, 0.90f },
+    { "Clean Pop",       "",           0.45f, 0.45f, 0.10f, 0.40f,  0.15f, 1.15f, 0.00f, 0.10f, 0.12f, 0.00f, 0.00f, 0.80f },
+    { "Lofi Tape",       "lofi",       0.20f, 0.60f, 0.55f, 0.00f, -0.70f, 0.80f, 0.35f, 0.00f, 0.22f, 0.10f, 0.00f, 0.90f },
+    { "Radio Talk",      "radio",      0.55f, 0.80f, 0.15f, 0.20f,  0.10f, 0.60f, 0.00f, 0.00f, 0.00f, 0.00f, 0.35f, 0.90f },
 };
 juce::StringArray VoxPillProcessor::presetNames()
 { juce::StringArray s; for (auto& p : kPresets) s.add (p.name); return s; }
@@ -293,7 +264,7 @@ void VoxPillProcessor::applyPreset (const juce::String& name)
     for (auto& p : kPresets)
         if (name.equalsIgnoreCase (p.name))
         {
-            set ("tune", p.tune); set ("tuneSpeed", p.speed); set ("deess", p.deess); set ("comp", p.comp); set ("sat", p.sat);
+            set ("deess", p.deess); set ("comp", p.comp); set ("sat", p.sat);
             set ("air", p.air); set ("tone", p.tone); set ("width", p.width); set ("chorus", p.chorus); set ("dbl", p.dbl);
             set ("reverb", p.rev); set ("echo", p.echo); set ("gate", p.gate); set ("dose", p.dose); set ("after", 1.f);
             return;
@@ -303,7 +274,7 @@ void VoxPillProcessor::resetAll()
 {
     for (auto* p : getParameters())
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
-            if (rp->paramID != "key" && rp->paramID != "scale") rp->setValueNotifyingHost (rp->getDefaultValue());
+            rp->setValueNotifyingHost (rp->getDefaultValue());
 }
 
 juce::String VoxPillProcessor::runPrompt (const juce::String& raw)
@@ -314,19 +285,19 @@ juce::String VoxPillProcessor::runPrompt (const juce::String& raw)
     auto hasIn = [] (const juce::String& t, std::initializer_list<const char*> ws) { for (auto w : ws) if (t.contains (w)) return true; return false; };
 
     if (hasIn (whole, { " reset", "start over", "clean slate" })) { resetAll(); return finish ("DOSE: wiped. fresh chain."); }
+    juce::String loaded, remainder = raw.toLowerCase().replace ("!", "");
     for (auto& p : kPresets)
     {
-        juce::String n (p.name);
-        if (whole.contains (n) || (n.contains ("trap") && whole.contains (" trap")) || (n.contains ("rnb") && hasIn (whole, { " r&b", " rnb" }))
-            || (n.contains ("lofi") && hasIn (whole, { "lo fi", "lofi" })) || (n.contains ("hyper") && whole.contains ("hyper")))
-        { applyPreset (p.name); return finish (juce::String ("DOSE: loaded '") + p.name + "' chain."); }
+        juce::String n = juce::String (p.name).toLowerCase().replace ("!", ""), al (p.alias);
+        juce::String hit = remainder.contains (n) ? n : (al.isNotEmpty() && (" " + remainder + " ").contains (al) ? al.trim() : juce::String());
+        if (hit.isNotEmpty()) { applyPreset (p.name); loaded = p.name; remainder = remainder.replace (hit, " "); break; }
     }
 
     juce::StringArray changed;
     auto touch = [&] (const char* id) { if (! changed.contains (id)) changed.add (id); };
 
     // split into clauses so "less harsh, more air" works per part
-    juce::StringArray rawClauses; rawClauses.addTokens (raw.toLowerCase().replace (".", "|").replace (",", "|").replace (" and ", "|").replace (" but ", "|").replace (" then ", "|").replace (" with ", "|").replace (" plus ", "|"), "|", "");
+    juce::StringArray rawClauses; rawClauses.addTokens (remainder.replace (".", "|").replace (",", "|").replace (" and ", "|").replace (" but ", "|").replace (" then ", "|").replace (" with ", "|").replace (" plus ", "|"), "|", "");
     for (auto& rc : rawClauses)
     {
         juce::String t = " " + rc.replace ("-", " ").trim() + " ";
@@ -345,27 +316,6 @@ juce::String VoxPillProcessor::runPrompt (const juce::String& raw)
             if (kill && killZeros) set (id, juce::String (id) == "width" ? 1.f : 0.f); else nudge (id, d * (kill ? 1.f : sg)); touch (id);
         };
 
-        // key / scale
-        for (int k = 11; k >= 0; --k)
-        {
-            juce::String nn = juce::String (kNotes[k]).toLowerCase();
-            bool done = false;
-            for (auto sc : { "min", "maj" })
-                if (t.contains (" " + nn + sc) || t.contains (" " + nn + " " + sc))
-                { set ("key", (float) k); set ("scale", juce::String (sc) == "min" ? 2.f : 1.f); touch ("key"); touch ("scale");
-                  if (get ("tune") < 0.3f) { set ("tune", 0.7f); touch ("tune"); } done = true; break; }
-            if (done) break;
-        }
-        if (has ({ "autotune", "auto tune", " tune", "pitch", "in key", "robot", "t pain", "tpain", "off key", "pitchy" }))
-        {
-            if (kill || (negate && ! has ({ "off key", "pitchy" }))) { set ("tune", 0.f); touch ("tune"); }
-            else
-            {
-                set ("tune", juce::jlimit (0.f, 1.f, get ("tune") + 0.5f * mag)); touch ("tune");
-                if (has ({ "robot", "t pain", "tpain", "hard", "autotune", "auto tune", "snap" })) { set ("tuneSpeed", 1.f); touch ("tuneSpeed"); }
-                else if (has ({ "natural", "subtle", "transparent", "gentle" })) { set ("tuneSpeed", 0.3f); touch ("tuneSpeed"); }
-            }
-        }
         if (has ({ "bright", "crisp", " air", "shine", "shimmer", "open", "sparkle", "dull", "muffled" })) { amt ("air", 0.2f, false); nudge ("tone", 0.08f * sg); touch ("tone"); }
         if (has ({ "dark", "mellow", "smooth", "warm", "moody" }))
         { nudge ("tone", -0.14f * sg); touch ("tone"); nudge ("air", -0.1f * sg); touch ("air"); if (has ({ "warm" })) amt ("sat", 0.1f, false); }
@@ -374,7 +324,7 @@ juce::String VoxPillProcessor::runPrompt (const juce::String& raw)
         if (has ({ "double", "stack", "layer", "fat", "thick", "ad lib", "adlib" })) amt ("dbl", 0.25f);
         if (has ({ "chorus", "lush", "dreamy" })) amt ("chorus", 0.25f);
         if (has ({ "reverb", "space", "hall", "ethereal", "atmos", " wet", "cathedral", "dreamy" })) amt ("reverb", 0.2f);
-        if (has ({ " dry", "tight", "upfront", "up front", "in your face", "close" })) { set ("reverb", 0.f); set ("echo", 0.f); touch ("reverb"); touch ("echo"); }
+        if (has ({ " dry", "drier", "tight", "upfront", "up front", "in your face", "close" })) { set ("reverb", 0.f); set ("echo", 0.f); touch ("reverb"); touch ("echo"); }
         if (has ({ "echo", "delay", "slap", "throw", "repeat" })) amt ("echo", 0.2f);
         if (has ({ "compress", "punch", "even", "consistent", "steady", "loud", "control", "level", "squash", "glue" })) amt ("comp", 0.25f);
         if (has ({ "harsh", "sibil", " ess", "s's", "piercing", "sharp", "hiss", "spit" })) amt ("deess", 0.3f, false);
@@ -386,10 +336,12 @@ juce::String VoxPillProcessor::runPrompt (const juce::String& raw)
         if (has ({ "less dose", "weaker" })) { nudge ("dose", -0.2f); touch ("dose"); }
     }
 
+    if (changed.isEmpty() && loaded.isNotEmpty())
+        return finish ("DOSE: loaded the " + loaded + " chain. tweak it, it's a starting point.");
     if (changed.isEmpty())
-        return finish ("DOSE: didn't catch that. try 'darker and wider', 'hard tune in f minor' or a style like 'melodic trap'.");
+        return finish ("DOSE: didn't catch that. try 'darker and wider', 'more reverb' or an artist name like 'nettspend'.");
     set ("after", 1.f);
-    juce::String reply = "DOSE: done.";
+    juce::String reply = loaded.isNotEmpty() ? "DOSE: loaded " + loaded + " +" : "DOSE: done.";
     for (auto& id : changed)
         if (auto* p = apvts.getParameter (id))
             reply << "  " << p->getName (20).toLowerCase() << " " << p->getCurrentValueAsText().toUpperCase();
