@@ -1,1 +1,27 @@
-
+name: Build VoxPill
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: VoxPill-Windows-VST3
+            extra: ""
+          - os: macos-latest
+            name: VoxPill-macOS-VST3
+            extra: -DCMAKE_OSX_ARCHITECTURES=arm64;x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release "${{ matrix.extra }}"
+      - name: Build
+        run: cmake --build build --config Release --target VoxPill_VST3 --parallel 4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: build/VoxPill_artefacts/Release/VST3/
